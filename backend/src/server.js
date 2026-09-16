@@ -7,7 +7,10 @@ const contactRouter = require('./routes/contact');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Trust proxy (required on Render)
+// ── Trust proxy ───────────────────────────────────────────────
+// Required on Render/Railway/Heroku — they sit behind a reverse proxy
+// that sets X-Forwarded-For. Without this, express-rate-limit throws
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR and crashes every request.
 app.set('trust proxy', 1);
 
 // ── Security headers ──────────────────────────────────────────

@@ -1,14 +1,5 @@
-const nodemailer = require('nodemailer');
-
-function createTransporter() {
-  return nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASSWORD,
-    },
-  });
-}
+// Uses Resend (https://resend.com) to send emails via HTTPS — not SMTP.
+// This works on Render free tier which blocks outbound SMTP ports.
 
 function formatEmailHtml({ name, email, phone, subject, message }) {
   const timestamp = new Date().toLocaleString('en-IN', {
@@ -67,62 +58,69 @@ function formatEmailHtml({ name, email, phone, subject, message }) {
     </div>
   </div>
 </body>
-</html>
-  `;
+</html>`;
 }
 
 async function sendContactEmail(req, res) {
   const { name, email, phone, subject, message } = req.body;
 
-  // ── Check env vars are set ──────────────────────────────────
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-    console.error('❌ EMAIL_USER or EMAIL_PASSWORD missing from .env file.');
+  // ── Check env vars ────────────────────────────────────────────
+  if (!process.env.RESEND_API_KEY) {
+    console.error('❌ RESEND_API_KEY missing from environment variables.');
     return res.status(500).json({
       success: false,
-      message: 'Email is not configured on the server. Please contact me directly.',
+      message: 'Email service not configured. Please contact me directly.',
     });
   }
 
-  const receiver = process.env.CONTACT_RECEIVER_EMAIL || process.env.EMAIL_USER;
+  const receiver = process.env.CONTACT_RECEIVER_EMAIL;
+  if (!receiver) {
+    console.error('❌ CONTACT_RECEIVER_EMAIL missing from environment variables.');
+    return res.status(500).json({
+      success: false,
+      message: 'Email service not configured. Please contact me directly.',
+    });
+  }
 
+  // ── Send via Resend API (HTTPS — works on Render free tier) ──
   try {
-    const transporter = createTransporter();
-
-    // Verify SMTP credentials before sending (helps catch wrong password early)
-    await transporter.verify();
-
-    await transporter.sendMail({
-      from: `"Portfolio Contact" <${process.env.EMAIL_USER}>`,
-      to: receiver,
-      replyTo: email,
-      subject: `[Portfolio] ${subject}`,
-      html: formatEmailHtml({ name, email, phone, subject, message }),
-      text: `New contact from ${name} (${email})\n\nPhone: ${phone || 'Not provided'}\nSubject: ${subject}\n\nMessage:\n${message}`,
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: 'Portfolio Contact <onboarding@resend.dev>',
+        to: [receiver],
+        reply_to: email,
+        subject: `[Portfolio] ${subject}`,
+        html: formatEmailHtml({ name, email, phone, subject, message }),
+        text: `New contact from ${name} (${email})\n\nPhone: ${phone || 'Not provided'}\nSubject: ${subject}\n\nMessage:\n${message}`,
+      }),
     });
 
-    console.log(`✅ Contact email sent from ${email} — Subject: ${subject}`);
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error('❌ Resend API error:', response.status, JSON.stringify(data));
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send message. Please try again or email me directly.',
+      });
+    }
+
+    console.log(`✅ Email sent via Resend. ID: ${data.id} | From: ${email} | Subject: ${subject}`);
     return res.status(200).json({
       success: true,
       message: 'Message sent successfully! I will get back to you soon.',
     });
 
   } catch (error) {
-    // Log the real error server-side for debugging
-    console.error('❌ Email send error:', error.code, '—', error.message);
-
-    // Provide a helpful (but safe) message back to the client
-    let clientMessage = 'Failed to send message. Please try again or email me directly.';
-    if (error.code === 'EAUTH') {
-      console.error('   → Gmail auth failed. Check EMAIL_USER and EMAIL_PASSWORD in .env');
-      console.error('   → Make sure you are using a Gmail App Password, not your account password.');
-      console.error('   → Get one at: https://myaccount.google.com/apppasswords');
-    } else if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT') {
-      console.error('   → Cannot connect to Gmail SMTP. Check your internet connection.');
-    }
-
+    console.error('❌ Resend fetch error:', error.message);
     return res.status(500).json({
       success: false,
-      message: clientMessage,
+      message: 'Failed to send message. Please try again or email me directly.',
     });
   }
 }
